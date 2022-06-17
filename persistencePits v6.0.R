@@ -317,12 +317,9 @@ grid.arrange(a,b,c,nrow=1,widths=c(1,1,1))
 #Regression
 kPit$lk<-log(-kPit$k)
 kPit$ltemp <-log(kPit$temp)
-kPit<-kPit[complete.cases(kPit),] # removes three experiments by Nakamura and Tayler which were done at temperatures of -20°C
 kPit<-kPit[kPit$temp<50,] # removes experiments done at temperatures above 50°C
 
 fit.final<-lm(lk~factor(microbial_group)+pH+temp+moisture+factor(urine)+factor(urea)+factor(additive),data=kPit)
 summary(fit.final)
-AIC(fit.final)
-BIC(fit.final)
 par(mfrow=c(2,3))
 plot(fit.final,which=1:6)

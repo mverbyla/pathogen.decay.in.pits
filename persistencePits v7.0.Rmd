@@ -302,6 +302,14 @@ c<-ggplot(myData,aes(additive,tk2))+geom_boxplot(aes(fill=additive),outlier.shap
 grid.arrange(a,b,c,nrow=1,widths=c(1,1,2))
 ```
 
+###Table 1
+
+```{r table1}
+kPit$lk<-log(-kPit$k)
+fit.final<-lm(lk~factor(microbial_group)+pH+temp+moisture+factor(urine)+factor(urea)+factor(additive),data=kPit[kPit$temp<50,]) #Regression
+summary(fit.final)
+```
+
 ###Figure S4
 
 ```{r figureS4, warning=FALSE}
@@ -338,3 +346,9 @@ chart.Correlation(kPit[,c("tk","k1","tk2","temp","pH","moisture")],histogram=TRU
 chart.Correlation(myData,histogram=TRUE)
 ```
 
+###Figure S7
+
+```{r figureS7, warning=FALSE}
+fit.final<-lm(lk~factor(microbial_group)+pH+temp+moisture+factor(urine)+factor(urea)+factor(additive),data=kPit)
+plot(fit.final,which=1:6)
+```
