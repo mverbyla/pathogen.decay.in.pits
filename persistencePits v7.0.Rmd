@@ -281,11 +281,13 @@ plotFun(persistInc) # Plots Figure 2
 
 ###Figure 3
 
-```{r figure3}
+```{r figure3, warning=FALSE}
+kPit$tk<-log(-kPit$k)
+kPit$tk1<-sqrt(log(kPit$k1+150))
+kPit$tk2<-sqrt(log(kPit$k2+10))
 par(mfrow=c(1,3))
 myData<-kPit[kPit$temp<50&kPit$temp>0,c("tk","k1","tk2","urine","urea","additive")]
 myData$urine<-factor(myData$urine)
-myData[myData$additive=="None",]$additive <- "a_None"
 a<-ggplot(myData,aes(urine,tk))+geom_boxplot(aes(fill=urine))+theme_bw()+scale_fill_grey(start=0,end=.9)
 b<-ggplot(myData,aes(urea,tk))+geom_boxplot(aes(fill=urea))+theme_bw()+scale_fill_grey(start=0,end=.9)
 c<-ggplot(myData,aes(additive,tk))+geom_boxplot(aes(fill=additive))+theme_bw()+scale_fill_grey(start=0,end=.9)
@@ -313,10 +315,6 @@ summary(fit.final)
 ###Figure S4
 
 ```{r figureS4, warning=FALSE}
-kPit$tk<-log(-kPit$k)
-kPit$tk1<-sqrt(log(kPit$k1+150))
-kPit$tk2<-sqrt(log(kPit$k2+10))
-
 par(mfrow=c(3,2),mar=c(4,4,2,2))
 hist(kPit[kPit$temp<50&kPit$temp>0,]$k,breaks=100)
 hist(kPit[kPit$temp<50&kPit$temp>0,]$tk,breaks=100)
@@ -350,5 +348,6 @@ chart.Correlation(myData,histogram=TRUE)
 
 ```{r figureS7, warning=FALSE}
 fit.final<-lm(lk~factor(microbial_group)+pH+temp+moisture+factor(urine)+factor(urea)+factor(additive),data=kPit)
+par(mfrow=c(2,3))
 plot(fit.final,which=1:6)
 ```
