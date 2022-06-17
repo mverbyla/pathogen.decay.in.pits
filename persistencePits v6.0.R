@@ -1,0 +1,328 @@
+rm(list=ls())
+require(ggplot2);require(gridExtra)
+library("PerformanceAnalytics")
+library("Hmisc")
+library("knitr")
+library("bbmle")
+
+persist<-read.csv("http://data.waterpathogens.org/dataset/eda3c64c-479e-4177-869c-93b3dc247a10/resource/f99291ab-d536-4536-a146-083a07ea49b9/download/k2p_persistence.csv",header=T)
+persist<-persist[persist$matrix=="Fecal sludge",]
+persist$ln_removal<--persist$log10_reduction*log(10)
+persist$additive <- as.character(persist$additive)
+persist$additive <- replace(persist$additive,persist$additive=="None","a_None")
+persist$additive <- as.factor(persist$additive)
+persist$urine <- as.character(persist$urine)
+
+nrow(persist)
+length(unique(persist$experiment_id))
+length(persist[persist$location_comment=="Laboratory-based study",]$experiment_id)
+length(unique(persist[persist$location_comment=="Laboratory-based study",]$experiment_id))
+length(persist[persist$location_comment!="Laboratory-based study",]$experiment_id)
+length(unique(persist[persist$location_comment!="Laboratory-based study",]$experiment_id))
+length(unique(persist[persist$microbial_group=="Virus",]$experiment_id))
+length(unique(persist[persist$microbial_group=="Bacteria",]$experiment_id))
+length(unique(persist[persist$microbial_group=="Protozoa",]$experiment_id))
+length(unique(persist[persist$microbial_group=="Helminth",]$experiment_id))
+unique(persist[persist$microbial_group=="Virus",]$microorganism_common_name)
+unique(persist[persist$microbial_group=="Bacteria",]$microorganism_common_name)
+unique(persist[persist$microbial_group=="Protozoa",]$microorganism_common_name)
+unique(persist[persist$microbial_group=="Helminth",]$microorganism_common_name)
+
+N<-length(unique(persist$experiment_id)) # the total number of experiments
+M<-length(persist$experiment_id) # the total number of data points
+persist$ind<-NA       # this creates a unique index variable to distinguish each independent experiment
+for(i in 1:length(persist$experiment_id)){
+  persist$ind[i]<-which(data.frame(unique(persist$experiment_id))==persist$experiment_id[i])
+}
+# here we create lots of NULL variables, which later we will populate values for in the upcoming "for" loop
+k<-NULL;k1<-NULL;k2<-NULL;intrcpt<-NULL;group<-NULL;addit<-NULL;urine<-NULL;urea<-NULL;moist<-NULL;temp<-NULL;pH<-NULL;r2<-NULL;t99<-NULL;t99jm<-NULL;authors<-NULL;num<-NULL;aicLL<-NULL;aicJM<-NULL;experiment<-NULL;maxLRV<-NULL;maxTime<-NULL;mcn<-NULL;best<-NULL;sterr<-NULL;sigme<-NULL
+par(mfrow=c(3,6)) #this creates the layout for the plots used for Figure S1
+
+for(i in 1:N){   #in this loop, we calculate the decay rate coefficients for the log-linear and JM2 models
+  time<-persist[persist$ind==i,]$time_days   # get the time for the present experiment
+  lnrv<-persist[persist$ind==i,]$ln_removal  # get the ln reduction for the present experiment
+  log10_reduction<-persist[persist$ind==i,]$log10_reduction # get the log10 reduction for the present experiment
+  # since we calculated the ln reduction, then equation gets algebraically rearranged like this:
+  #         Ct = Co*exp(-k*t) 
+  #         ln(Ct/Co) = -k*t
+  
+  # first, we fit the model like this to express the decay rate coefficient, k, on a LN scale
+  fit<-lm(lnrv~time)  # lnrv = ln(Ct/Co), so our linear model is lnrv~time
+  # then, we fit the model like this to create plots and calculate T99 values more easily later on
+  fit2 <- lm(log10_reduction~time)
+  
+  # next, we set up the JM2 model
+  JM2<-function(k1,k2,sigma){
+    R = lnrv - log(1/(1+exp(k1+k2*log(time)))) # this is the equation for the JM2 model
+    R = suppressWarnings(dnorm(R,0,sigma,log=T)) # this is the standard deviation of the normally distributed difference between measured and modeled LRVs
+    -sum(R)  # this is the negative log likelihood, which must be maximized (using the MLE method)
+  }
+  
+  # in order to use MLE to find the best values for the JM2 model, we have to provide some halfway decent guesses for k1, k2, and sigma
+  # through trial and error, we found that starting guesses of k1=-5, k2=1, and sigma=3 generally produced converging results for most experiments; the following are exceptions
+  if(fit$coefficients[2]<=-10){k1guess=-fit$coefficients[2];k2guess=-fit$coefficients[2];siguess=3}else{
+    if(fit$coefficients[2]>=-0.0001){k1guess=-5;k2guess=0.01;siguess=2}else{
+      if(i==48|i==181|i==186){k1guess=-0.1;k2guess=1;siguess=1}else{
+        if(i==115){k1guess=4;k2guess=100;siguess=1}else{
+          if(i==112|i==113|i==105|i==114){k1guess=5;k2guess=1;siguess=1}else{
+            if(i==180){k1guess=1;k2guess=10;siguess=1}else{
+              k1guess=-5;k2guess=1;siguess=3
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if(length(time)>3){ # it only calculates the k1, k2, and sigma values for the JM2 model if there are more than 3 time points in the experiment
+    fit.jm<-mle2(minuslogl=JM2,start=list(k1=k1guess,k2=k2guess,sigma=siguess),optimizer="nlminb") # uses unbounded optimization using portable Fortran programs for numerical computation (PORT) routines 
+    # Reference: Fox et al. (1978). “The PORT Mathematical Subroutine Library.” ACM Transactions on Mathematical Software, 4(2), 104–126. doi:10.1145/355780.355783
+  }else{fit.jm<-NA}
+  
+  ## NEXT WE STORE THE VALUES OF THE VARIABLES AND STATISTICS WE WANT TO STORE FOR EACH EXPERIMENT
+  # here, we store the basic information about the experiment (e.g., the design, operational, and environmental parameters)  
+  authors[i]<-as.character(unique(persist[persist$ind==i,]$authors)) # the names of the authors of the paper where the experiment's data were published
+  experiment[i]<-as.numeric(unique(persist[persist$ind==i,]$experiment_id)) # the unique experiment ID
+  num[i]<-length(time) # number of time points in the experiment
+  maxTime[i]<-max(time) # the maximum time point for which data were collected in the experiment
+  maxLRV[i]<-as.numeric(max(persist[persist$ind==i,]$log10_reduction)) # the maximum log10 reduction value observed in the experiment
+  group[i]<-as.character(unique(persist[persist$ind==i,]$microbial_group)) # the microbial group used in the experiment (viruses, bacteria, protozoa, helminths)
+  mcn[i]<-as.character(persist[persist$ind==i,]$microorganism_common_name) # a more specific description of the microbial group
+  addit[i]<-as.character(unique(persist[persist$ind==i,]$additive)) # the type of additive applied to the fecal sludge
+  urine[i]<-as.character(unique(persist[persist$ind==i,]$urine)) # whether the experiment was done with feces only or feces mixed with urine (excreta)
+  moist[i]<-as.numeric(median(persist[persist$ind==i,]$moisture_content_percent)) # the average percent moisture content of the fecal sludge during the experiment
+  temp[i]<-as.numeric(median(persist[persist$ind==i,]$temperature_celsius)) # the average temperature of the fecal sludge during the experiment
+  pH[i]<-as.numeric(median(persist[persist$ind==i,]$pH)) # the average pH of the fecal sludge during the experiment
+  urea[i]<-as.character(unique(persist[persist$ind==i,]$urea)) # whether or not urea (or stored urine) was added to the fecal sludge during the experiment
+
+  # here, we store the statistics for the fit to the log-linear model
+  k[i]<-fit$coefficients[2] # the log-linear decay rate coefficient
+  intrcpt[i]<-fit$coefficients[1] # the log-linear model Y-intercept
+  out<-summary(fit); sterr[i]<-out$coefficients[1,2] # this is the standard error of the decay rate coefficient
+  t99[i]<-(2-fit2$coefficients[1])/fit2$coefficients[2] # the predicted T99 value for the log-linear model
+  r2[i]<-summary(fit)$r.squared # coefficient of determination for the log-linear model fit
+  aicLL[i]<-AIC(fit) # the AIC value for the log-linear model fit
+  
+  # and here, we store the statistics for the fit to the JM2 model
+  if(!is.na(fit.jm)){k1[i]<-coef(fit.jm)["k1"]} # the 1st JM2 model decay rate coefficient
+  if(!is.na(fit.jm)){k2[i]<-coef(fit.jm)["k2"]} # the 2nd JM2 model decay rate coefficient
+  if(!is.na(fit.jm)){sigme[i]<-coef(fit.jm)["sigma"]} # the sigma value for the fit of the JM2 model (measure of uncertainty)
+  t99jm[i]<-exp((log(99)-k1[i])/k2[i]) # the predicted T99 value for the JM2 model
+  if(length(time)>3){aicJM[i]<-AIC(fit.jm)}else{aicJM[i]<-NA} # the AIC value for the JM2 model fit
+  
+  # this stores text describing which of the two models had the better fit (Chick Log-Linear Model or JM2 Model), based on the AIC values calculated
+  if(is.na(aicJM[i])){best[i]<-"Chick Model"}else{if(aicLL[i]<aicJM[i]){best[i]<-"Chick Model"}else{best[i]<-"JM2 Model"}}
+
+  # this next chunk of script creates the plot for each panel of Figure S1 (new plot created for each experiment during each round of the FOR loop)
+  par(mar=c(5,4,3.5,1)) # sets the margins so that the plot looks nice
+  plot(time,-log10_reduction,ylim=c(-8,0),xlim=c(0,500),ylab="Log10 Reduction",xlab="Time (days)",main=paste(experiment[i],", ",group[i],", N=",num[i],", LRVmax=",round(maxLRV[i],2),"\n",addit[i],", ",urea[i],", ",round(r2[i],2),"\n",authors[i],sep=""),sub=best[i],cex.main=0.95)
+  lines(seq(0,360),-fit2$coefficients[2]*seq(0,360)-fit2$coefficients[1],col="blue")
+  if(length(time)>3){lines(seq(0,360),log10(1/(1+exp(coef(fit.jm)["k1"]+coef(fit.jm)["k2"]*log(seq(0,360))))),lty=2,col="red")}
+}
+
+kPit<-data.frame(experiment=experiment,authors=authors,microbial_group=group,mcn=mcn,k=k,se.k=sterr,k1=k1,k2=k2,se.jm=sigme,int=intrcpt,aicLL=aicLL,aicJM=aicJM,num=num,additive=addit,urea=urea,urine=urine,moisture=moist,temp=temp,pH=pH,r2=r2,maxLRV=maxLRV,t99=t99,t99jm=t99jm)
+
+#Figure S2
+par(mfrow=c(3,2),mar=c(4,4,2,2))
+hist(kPit$k,breaks=20)
+hist(log(-kPit$k),breaks=40)
+hist(kPit$k1,breaks=20)
+hist(log(kPit$k1),breaks=10)
+hist(kPit$k2,breaks=20)
+hist(log(kPit$k2),breaks=25)
+
+#Table 1
+data.frame(rbind(
+  c(paste(length(kPit[kPit$microbial_group=="Virus",]$k)," (",length(kPit[kPit$microbial_group=="Virus"&kPit$maxLRV>=1,]$t99),")",sep=""), 
+    -quantile(kPit[kPit$microbial_group=="Virus",]$k,c(0.5,0.95,0.05)),
+    quantile(kPit[kPit$microbial_group=="Virus"&kPit$maxLRV>=1,]$t99,c(0.5,0.05,0.95))),
+  c(paste(length(kPit[kPit$microbial_group=="Bacteria",]$k)," (",length(kPit[kPit$microbial_group=="Bacteria"&kPit$maxLRV>=1,]$t99),")",sep=""), 
+    -quantile(kPit[kPit$microbial_group=="Bacteria",]$k,c(0.5,0.95,0.05)),
+    quantile(kPit[kPit$microbial_group=="Bacteria"&kPit$maxLRV>=1,]$t99,c(0.5,0.05,0.95))),
+  c(paste(length(kPit[kPit$microbial_group=="Protozoa",]$k)," (",length(kPit[kPit$microbial_group=="Protozoa"&kPit$maxLRV>=1,]$t99),")",sep=""), 
+    -quantile(kPit[kPit$microbial_group=="Protozoa",]$k,c(0.5,0.95,0.05)),
+    quantile(kPit[kPit$microbial_group=="Protozoa"&kPit$maxLRV>=1,]$t99,c(0.5,0.05,0.95))),
+  c(paste(length(kPit[kPit$microbial_group=="Helminth",]$k)," (",length(kPit[kPit$microbial_group=="Helminth"&kPit$maxLRV>=1,]$t99),")",sep=""), 
+    -quantile(kPit[kPit$microbial_group=="Helminth",]$k,c(0.5,0.95,0.05)),
+    quantile(kPit[kPit$microbial_group=="Helminth"&kPit$maxLRV>=1,]$t99,c(0.5,0.05,0.95)))
+))
+
+#Table 2
+data.frame(rbind(
+  c(length(kPit[kPit$microbial_group=="Virus"&kPit$num>3&kPit$maxLRV>=1,]$t99jm),
+    quantile(kPit[kPit$microbial_group=="Virus"&kPit$num>3&kPit$maxLRV>=1,]$k1,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Virus"&kPit$num>3&kPit$maxLRV>=1,]$k2,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Virus"&kPit$num>3&kPit$maxLRV>=1,]$t99jm,c(0.5,0.05,0.95),na.rm=T)),
+  c(length(kPit[kPit$microbial_group=="Bacteria"&kPit$num>3&kPit$maxLRV>=1,]$t99jm),
+    quantile(kPit[kPit$microbial_group=="Bacteria"&kPit$num>3&kPit$maxLRV>=1,]$k1,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Bacteria"&kPit$num>3&kPit$maxLRV>=1,]$k2,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Bacteria"&kPit$num>3&kPit$maxLRV>=1,]$t99jm,c(0.5,0.05,0.95),na.rm=T)),
+  c(length(kPit[kPit$microbial_group=="Protozoa"&kPit$num>3&kPit$maxLRV>=1,]$t99jm),
+    quantile(kPit[kPit$microbial_group=="Protozoa"&kPit$num>3&kPit$maxLRV>=1,]$k1,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Protozoa"&kPit$num>3&kPit$maxLRV>=1,]$k2,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Protozoa"&kPit$num>3&kPit$maxLRV>=1,]$t99jm,c(0.5,0.05,0.95),na.rm=T)),
+  c(length(kPit[kPit$microbial_group=="Helminth"&kPit$num>3&kPit$maxLRV>=1,]$t99jm),
+    quantile(kPit[kPit$microbial_group=="Helminth"&kPit$num>3&kPit$maxLRV>=1,]$k1,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Helminth"&kPit$num>3&kPit$maxLRV>=1,]$k2,c(0.5,0.05,0.95),na.rm=T),
+    quantile(kPit[kPit$microbial_group=="Helminth"&kPit$num>3&kPit$maxLRV>=1,]$t99jm,c(0.5,0.05,0.95),na.rm=T))
+))
+
+#######
+# Model Selection
+#######
+
+#overall
+sum(kPit[kPit$num>3&kPit$maxLRV>=1,]$aicJM < kPit[kPit$num>3&kPit$maxLRV>=1,]$aicLL, na.rm=T) #JM2 is better fit
+sum(kPit[kPit$num>3&kPit$maxLRV>=1,]$aicJM > kPit[kPit$num>3&kPit$maxLRV>=1,]$aicLL, na.rm=T) #log linear is better fit
+
+#viruses
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Virus",]$aicJM < kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Virus",]$aicLL, na.rm=T) #JM2 is better fit
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Virus",]$aicJM > kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Virus",]$aicLL, na.rm=T) #log linear is better fit
+
+#bacteria
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Bacteria",]$aicJM < kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Bacteria",]$aicLL, na.rm=T) #JM2 is better fit
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Bacteria",]$aicJM > kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Bacteria",]$aicLL, na.rm=T) #log linear is better fit
+
+#protozoa
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Protozoa",]$aicJM < kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Protozoa",]$aicLL, na.rm=T) #JM2 is better fit
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Protozoa",]$aicJM > kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Protozoa",]$aicLL, na.rm=T) #log linear is better fit
+
+#helminth
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Helminth",]$aicJM < kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Helminth",]$aicLL, na.rm=T) #JM2 is better fit
+sum(kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Helminth",]$aicJM > kPit[kPit$num>3&kPit$maxLRV>=1&kPit$microbial_group=="Helminth",]$aicLL, na.rm=T) #log linear is better fit
+
+# Overall plot
+
+persistExc<-persist[!persist$experiment_id %in% kPit$experiment,]
+persistInc<-persist[persist$experiment_id %in% kPit$experiment,]
+
+plotFun<-function(persistanceData){
+  fitV <- lm(-log10_reduction ~ time_days, data = persistanceData[persistanceData$microbial_group=="Virus" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,])
+  #temp_var <- predict(fitV, interval="prediction") #this allows for plotting of the overall regression line and confidence, prediction intervals
+  new_df <- persistanceData[persistanceData$microbial_group=="Virus" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,] #cbind(persistanceData[persistanceData$microbial_group=="Virus" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,], temp_var)
+  vi <- ggplot(new_df, aes(time_days, -log10_reduction)) +
+    geom_point() +
+    #geom_line(aes(y=lwr), color = "red", linetype = "dashed") +
+    #geom_line(aes(y=upr), color = "red", linetype = "dashed") +
+    ylim(-8,0) + ylab("Log Reduction Value") + 
+    xlim(0,150) + xlab("Time (days)") +
+    ggtitle("Viruses") +
+    theme(plot.title = element_text(hjust=0.5)) +
+    theme_bw() #+ geom_smooth(method=lm, se=TRUE)
+  fitB <- lm(-log10_reduction ~ time_days, data = persistanceData[persistanceData$microbial_group=="Bacteria" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,])
+  new_df <- persistanceData[persistanceData$microbial_group=="Bacteria" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,]
+  ba <- ggplot(new_df, aes(time_days, -log10_reduction))+
+    geom_point() +
+    ylim(-8,0) + ylab("Log Reduction Value") + 
+    xlim(0,150) + xlab("Time (days)") +
+    ggtitle("Bacteria") +
+    theme(plot.title = element_text(hjust=0.5))+
+    theme_bw()
+  fitH <- lm(-log10_reduction ~ time_days, data = persistanceData[persistanceData$microbial_group=="Helminth" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,])
+  new_df <- persistanceData[persistanceData$microbial_group=="Helminth" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,]
+  he <- ggplot(new_df, aes(time_days, -log10_reduction))+
+    geom_point() +
+    ylim(-8,0) + ylab("Log Reduction Value") + 
+    xlim(0,150) + xlab("Time (days)") +
+    ggtitle("Helminths") +
+    theme(plot.title = element_text(hjust=0.5))+
+    theme_bw()
+  fitP <- lm(-log10_reduction ~ time_days, data = persistanceData[persistanceData$microbial_group=="Protozoa" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,])
+  new_df <- persistanceData[persistanceData$microbial_group=="Protozoa" & persistanceData$matrix=="Fecal sludge" & persistanceData$time_days<200,]
+  pr <- ggplot(new_df, aes(time_days, -log10_reduction))+
+    geom_point() +
+    ylim(-8,0) + ylab("Log Reduction Value") + 
+    xlim(0,150) + xlab("Time (days)") +
+    ggtitle("Protozoa") +
+    theme(plot.title = element_text(hjust=0.5))+
+    theme_bw()
+
+  grid.arrange(vi,ba,pr,he,nrow = 2,widths = c(2,2))+
+    ggsave("LRVs over time.png", plot = grid.arrange(vi,ba,pr,he), scale = 0.5, dpi = 300)
+  
+}
+
+#Figure 2
+plotFun(persistInc)
+
+kPit$tk<-log(-kPit$k)
+kPit$tk1<-sqrt(log(kPit$k1+150))
+kPit$tk2<-sqrt(log(kPit$k2+10))
+indy1<-kPit[!is.na(kPit$aicJM)&!is.na(kPit$aicLL)&kPit$aicJM>kPit$aicLL,]$experiment
+indy2<-kPit[!is.na(kPit$aicJM)&!is.na(kPit$aicLL)&kPit$aicJM<kPit$aicLL,]$experiment
+indy3<-kPit[is.na(kPit$aicJM),]$experiment
+kPit$t99best<-NA
+kPit[kPit$experiment %in% indy1,]$t99best<-kPit[kPit$experiment %in% indy1,]$t99
+kPit[kPit$experiment %in% indy2,]$t99best<-kPit[kPit$experiment %in% indy2,]$t99jm
+kPit[kPit$experiment %in% indy3,]$t99best<-kPit[kPit$experiment %in% indy3,]$t99
+kPit$t99best
+
+#Figure S4
+par(mfrow=c(3,2))
+hist(kPit[kPit$temp<50&kPit$temp>0,]$k,breaks=100)
+hist(kPit[kPit$temp<50&kPit$temp>0,]$tk,breaks=100)
+hist(kPit[kPit$temp<50&kPit$temp>0,]$k1,breaks=100)
+hist(kPit[kPit$temp<50&kPit$temp>0&kPit$k1>-20&kPit$k1<20,]$tk1,breaks=100)
+hist(kPit[kPit$temp<50&kPit$temp>0,]$k2,breaks=100)
+hist(kPit[kPit$temp<50&kPit$temp>0&kPit$k1<50,]$tk2,breaks=100)
+
+#Figure S6
+myData<-kPit[kPit$temp<50&kPit$temp>0,c("tk","k1","tk2","temp","pH","moisture")]
+names(myData)<-c("ln(k) (1/days)","k1","tk2","Temperature (°C)","pH","moisture")
+par(mfrow=c(1,1))
+chart.Correlation(kPit[,c("tk","k1","tk2","temp","pH","moisture")],histogram=TRUE)
+Hmisc::rcorr(kPit$tk,kPit$pH)
+Hmisc::rcorr(kPit$k1,kPit$pH)
+Hmisc::rcorr(kPit$tk2,kPit$pH)
+Hmisc::rcorr(kPit$tk,kPit$temp)
+Hmisc::rcorr(kPit$k1,kPit$temp)
+Hmisc::rcorr(kPit$tk2,kPit$temp)
+Hmisc::rcorr(kPit$tk,kPit$moisture)
+Hmisc::rcorr(kPit$k1,kPit$moisture)
+Hmisc::rcorr(kPit$tk2,kPit$moisture)
+chart.Correlation(myData,histogram=TRUE)
+Hmisc::rcorr(myData$`ln(k) (1/days)`,myData$pH)
+Hmisc::rcorr(myData$`ln(k) (1/days)`,myData$`Temperature (°C)`)
+Hmisc::rcorr(myData$k1,myData$`Temperature (°C)`)
+Hmisc::rcorr(myData$tk2,myData$`Temperature (°C)`)
+
+#Figure 3
+par(mfrow=c(1,3))
+myData<-kPit[kPit$temp<50&kPit$temp>0,c("tk","k1","tk2","urine","urea","additive")]
+myData$urine<-factor(myData$urine)
+myData[myData$additive=="None",]$additive <- "a_None"
+a<-ggplot(myData,aes(urine,tk))+geom_boxplot(aes(fill=urine))+theme_bw()+scale_fill_grey(start=0,end=.9)
+b<-ggplot(myData,aes(urea,tk))+geom_boxplot(aes(fill=urea))+theme_bw()+scale_fill_grey(start=0,end=.9)
+c<-ggplot(myData,aes(additive,tk))+geom_boxplot(aes(fill=additive))+theme_bw()+scale_fill_grey(start=0,end=.9)
+grid.arrange(a,b,c,nrow=1,widths=c(1,1,2))
+
+a<-ggplot(myData,aes(urine,k1))+geom_boxplot(aes(fill=urine),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(-100,50))
+b<-ggplot(myData,aes(urea,k1))+geom_boxplot(aes(fill=urea),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(-100,50))
+c<-ggplot(myData,aes(additive,k1))+geom_boxplot(aes(fill=additive),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(-100,50))
+grid.arrange(a,b,c,nrow=1,widths=c(1,1,2))
+
+a<-ggplot(myData,aes(urine,tk2))+geom_boxplot(aes(fill=urine),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(1.5,2))
+b<-ggplot(myData,aes(urea,tk2))+geom_boxplot(aes(fill=urea),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(1.5,2))
+c<-ggplot(myData,aes(additive,tk2))+geom_boxplot(aes(fill=additive),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(1.5,2))
+grid.arrange(a,b,c,nrow=1,widths=c(1,1,2))
+
+#Figure S5
+
+myData<-kPit[kPit$temp<50&kPit$temp>0,c("microbial_group","k","k1","k2","urine","urea","additive")]
+a<-ggplot(myData,aes(microbial_group,k))+geom_boxplot(aes(fill=microbial_group),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(-15,1))
+b<-ggplot(myData,aes(microbial_group,k1))+geom_boxplot(aes(fill=microbial_group),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(-35,10))
+c<-ggplot(myData,aes(microbial_group,k2))+geom_boxplot(aes(fill=microbial_group),outlier.shape=NA)+theme_bw()+scale_fill_grey(start=0,end=.9)+coord_cartesian(ylim=c(-10,30))
+grid.arrange(a,b,c,nrow=1,widths=c(1,1,1))
+
+#Regression
+kPit$lk<-log(-kPit$k)
+kPit$ltemp <-log(kPit$temp)
+kPit<-kPit[complete.cases(kPit),] # removes three experiments by Nakamura and Tayler which were done at temperatures of -20°C
+kPit<-kPit[kPit$temp<50,] # removes experiments done at temperatures above 50°C
+
+fit.final<-lm(lk~factor(microbial_group)+pH+temp+moisture+factor(urine)+factor(urea)+factor(additive),data=kPit)
+summary(fit.final)
+AIC(fit.final)
+BIC(fit.final)
+par(mfrow=c(2,3))
+plot(fit.final,which=1:6)
